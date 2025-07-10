@@ -736,18 +736,30 @@ impl App for GufwApp {
             
             match self.selected_tab {
                 Tab::Simple => {
-                    let rules = {
+                    let (rules, error) = {
                         let status = self.ufw_status.lock().unwrap();
-                        status.rules.clone()
+                        (status.rules.clone(), status.error.clone())
                     };
-                    if rules.is_empty() {
+                    
+                    // Check if we're still loading (have an error or not authenticated)
+                    if let Some(_) = error {
                         ui.label("Loading rules...");
+                        return;
+                    }
+                    
+                    if !self.authenticated {
+                        ui.label("Please authenticate to view rules");
                         return;
                     }
                     egui::Frame::group(ui.style()).show(ui, |ui| {
                         ui.heading("Simple Rules");
                         ui.add_space(4.0);
-                        egui::Grid::new("rules_grid").striped(true).show(ui, |ui| {
+                        
+                        if rules.is_empty() {
+                            ui.colored_label(egui::Color32::GRAY, "No rules configured. Add your first rule below.");
+                            ui.add_space(8.0);
+                        } else {
+                            egui::Grid::new("rules_grid").striped(true).show(ui, |ui| {
                             ui.label(egui::RichText::new("Port/Protocol").strong());
                             ui.label(egui::RichText::new("Action").strong());
                             ui.label(egui::RichText::new("Direction").strong());
@@ -780,6 +792,7 @@ impl App for GufwApp {
                                 ui.end_row();
                             }
                         });
+                        }
                         ui.add_space(8.0);
                         if ui.add(egui::Button::new("Add Rule").fill(egui::Color32::from_rgb(60, 180, 60))).on_hover_text("Add a new rule").clicked() {
                             self.show_add_dialog = true;
@@ -839,12 +852,19 @@ impl App for GufwApp {
                     });
                 }
                 Tab::Advanced => {
-                    let rules = {
+                    let (rules, error) = {
                         let status = self.ufw_status.lock().unwrap();
-                        status.rules.clone()
+                        (status.rules.clone(), status.error.clone())
                     };
-                    if rules.is_empty() {
+                    
+                    // Check if we're still loading (have an error or not authenticated)
+                    if let Some(_) = error {
                         ui.label("Loading rules...");
+                        return;
+                    }
+                    
+                    if !self.authenticated {
+                        ui.label("Please authenticate to view rules");
                         return;
                     }
                     egui::Frame::group(ui.style()).show(ui, |ui| {
@@ -857,8 +877,12 @@ impl App for GufwApp {
                             }
                         });
                         ui.add_space(8.0);
-                        // Show current rules in advanced format
-                        egui::Grid::new("advanced_rules_grid").striped(true).show(ui, |ui| {
+                        
+                        if rules.is_empty() {
+                            ui.colored_label(egui::Color32::GRAY, "No rules configured. Add your first rule above.");
+                        } else {
+                            // Show current rules in advanced format
+                            egui::Grid::new("advanced_rules_grid").striped(true).show(ui, |ui| {
                             ui.label(egui::RichText::new("Port/Protocol").strong());
                             ui.label(egui::RichText::new("Action").strong());
                             ui.label(egui::RichText::new("Direction").strong());
@@ -883,6 +907,7 @@ impl App for GufwApp {
                                 ui.end_row();
                             }
                         });
+                        }
                     });
                 }
             }
