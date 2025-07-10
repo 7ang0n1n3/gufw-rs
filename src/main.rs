@@ -46,10 +46,6 @@ struct GufwApp {
     // Advanced tab fields
     show_advanced_dialog: bool,
     advanced_rule: AdvancedRule,
-    show_import_dialog: bool,
-    import_text: String,
-    show_export_dialog: bool,
-    export_text: String,
     // Edit dialog fields
     show_edit_dialog: bool,
     edit_action: String,
@@ -93,10 +89,6 @@ impl Default for GufwApp {
                 log: false,
                 comment: String::new(),
             },
-            show_import_dialog: false,
-            import_text: String::new(),
-            show_export_dialog: false,
-            export_text: String::new(),
             show_edit_dialog: false,
             edit_action: String::new(),
             edit_port: String::new(),
@@ -411,58 +403,9 @@ impl GufwApp {
         });
     }
 
-    fn export_rules(&self) -> String {
-        if !self.authenticated {
-            return "Not authenticated".to_string();
-        }
 
-        match run_privileged_ufw_command(&["status", "numbered"]) {
-            Ok(output) => output,
-            Err(e) => format!("Failed to export rules: {}", e),
-        }
-    }
 
-    fn import_rules(&mut self, rules_text: &str) {
-        if !self.authenticated {
-            return;
-        }
 
-        let ufw_status = self.ufw_status.clone();
-        let rules_text = rules_text.to_string();
-        
-        thread::spawn(move || {
-            // Parse and import rules
-            for line in rules_text.lines() {
-                let line = line.trim();
-                if line.is_empty() || line.starts_with('#') {
-                    continue;
-                }
-                
-                // Simple rule parsing - in a real implementation, you'd want more robust parsing
-                if line.starts_with("ufw") {
-                    let cmd = line.strip_prefix("ufw ").unwrap_or(line);
-                    let _ = run_privileged_ufw_command(&cmd.split_whitespace().collect::<Vec<&str>>());
-                }
-            }
-            
-            // Refresh status after import
-            thread::sleep(Duration::from_millis(1000));
-            let refresh_result = get_ufw_status_and_rules();
-            let mut status = ufw_status.lock().unwrap();
-            match refresh_result {
-                Ok((enabled, rules, default_incoming, default_outgoing)) => {
-                    status.enabled = enabled;
-                    status.rules = rules;
-                    status.default_incoming = default_incoming;
-                    status.default_outgoing = default_outgoing;
-                    status.error = None;
-                }
-                Err(e) => {
-                    status.error = Some(e);
-                }
-            }
-        });
-    }
 
     fn parse_rule(&self, rule_str: &str) -> Option<(String, String, String)> {
         // Parse rule string like "22/tcp                   ALLOW       Anywhere"
@@ -912,13 +855,6 @@ impl App for GufwApp {
                             if ui.add(egui::Button::new("Add Advanced Rule").fill(egui::Color32::from_rgb(60, 180, 60))).clicked() {
                                 self.show_advanced_dialog = true;
                             }
-                            if ui.add(egui::Button::new("Export Rules").fill(egui::Color32::from_rgb(60, 120, 180))).clicked() {
-                                self.export_text = self.export_rules();
-                                self.show_export_dialog = true;
-                            }
-                            if ui.add(egui::Button::new("Import Rules").fill(egui::Color32::from_rgb(180, 120, 60))).clicked() {
-                                self.show_import_dialog = true;
-                            }
                         });
                         ui.add_space(8.0);
                         // Show current rules in advanced format
@@ -1128,57 +1064,9 @@ impl App for GufwApp {
             }
         }
 
-        // Import Rules Dialog
-        if self.show_import_dialog {
-            let mut import_clicked = false;
-            let mut import_text = self.import_text.clone();
-            egui::Window::new("Import Rules")
-                .collapsible(false)
-                .resizable(true)
-                .show(ctx, |ui| {
-                    ui.label("Paste UFW rules (one per line):");
-                    ui.add_space(4.0);
-                    ui.text_edit_multiline(&mut import_text);
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        if ui.button("Import").clicked() {
-                            import_clicked = true;
-                            self.show_import_dialog = false;
-                        }
-                        if ui.button("Cancel").clicked() {
-                            self.show_import_dialog = false;
-                        }
-                    });
-                });
-            if import_clicked {
-                self.import_rules(&import_text);
-            } else {
-                self.import_text = import_text;
-            }
-        }
 
-        // Export Rules Dialog
-        if self.show_export_dialog {
-            let mut export_text = self.export_text.clone();
-            egui::Window::new("Export Rules")
-                .collapsible(false)
-                .resizable(true)
-                .show(ctx, |ui| {
-                    ui.label("Current UFW rules (copy these to save):");
-                    ui.add_space(4.0);
-                    ui.text_edit_multiline(&mut export_text);
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        if ui.button("Copy to Clipboard").clicked() {
-                            // Copy to clipboard using the modern API
-                            ui.ctx().copy_text(export_text.clone());
-                        }
-                        if ui.button("Close").clicked() {
-                            self.show_export_dialog = false;
-                        }
-                    });
-                });
-        }
+
+
 
         // Edit Rule Dialog
         if self.show_edit_dialog {
