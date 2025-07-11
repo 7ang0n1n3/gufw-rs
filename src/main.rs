@@ -65,6 +65,9 @@ struct GufwApp {
     policy_outgoing: String,
     // Map rule display string to original command parts
     rule_command_map: HashMap<String, Vec<String>>,
+    // Error dialog fields
+    show_error_dialog: bool,
+    current_error: String,
 }
 
 impl Default for GufwApp {
@@ -107,6 +110,8 @@ impl Default for GufwApp {
             policy_incoming: "deny".to_string(),
             policy_outgoing: "allow".to_string(),
             rule_command_map: HashMap::new(),
+            show_error_dialog: false,
+            current_error: String::new(),
         }
     }
 }
@@ -140,8 +145,8 @@ impl GufwApp {
                             self.spawn_status_thread();
                         }
                         _ => {
-                            let mut status = self.ufw_status.lock().unwrap();
-                            status.error = Some("Authentication failed. Please try again.".to_string());
+                            self.current_error = "Authentication failed. Please try again.".to_string();
+                            self.show_error_dialog = true;
                         }
                     }
                 }
@@ -733,6 +738,9 @@ fn run_privileged_ufw_command(args: &[&str]) -> Result<String, String> {
         Ok(output) if output.status.success() => {
             Ok(String::from_utf8_lossy(&output.stdout).to_string())
         }
+        Ok(output) => {
+            Err(format!("Command failed: {}", String::from_utf8_lossy(&output.stderr)))
+        }
         _ => {
             // Fallback to pkexec if sudo fails
             let pkexec_result = Command::new("pkexec")
@@ -884,6 +892,17 @@ impl App for GufwApp {
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
+            // Check for errors and show dialog if needed
+            {
+                let status = self.ufw_status.lock().unwrap();
+                if let Some(error) = &status.error {
+                    if !self.show_error_dialog {
+                        self.current_error = error.clone();
+                        self.show_error_dialog = true;
+                    }
+                }
+            }
+            
             let rules = {
                 let status = self.ufw_status.lock().unwrap();
                 status.rules.clone()
@@ -908,19 +927,16 @@ impl App for GufwApp {
             
             match self.selected_tab {
                 Tab::Simple => {
-                    let (rules, error) = {
+                    let rules = {
                         let status = self.ufw_status.lock().unwrap();
-                        (status.rules.clone(), status.error.clone())
+                        status.rules.clone()
                     };
                     
-                    // Check if we're still loading (have an error or not authenticated)
-                    if let Some(_) = error {
-                        ui.label("Loading rules...");
-                        return;
-                    }
-                    
+                    // Check if we're still loading (not authenticated)
                     if !self.authenticated {
-                        ui.label("Please authenticate to view rules");
+                        ui.vertical_centered(|ui| {
+                            ui.label("Please authenticate to view rules");
+                        });
                         return;
                     }
                     egui::Frame::group(ui.style()).show(ui, |ui| {
@@ -1026,19 +1042,16 @@ impl App for GufwApp {
                     });
                 }
                 Tab::Advanced => {
-                    let (rules, error) = {
+                    let rules = {
                         let status = self.ufw_status.lock().unwrap();
-                        (status.rules.clone(), status.error.clone())
+                        status.rules.clone()
                     };
                     
-                    // Check if we're still loading (have an error or not authenticated)
-                    if let Some(_) = error {
-                        ui.label("Loading rules...");
-                        return;
-                    }
-                    
+                    // Check if we're still loading (not authenticated)
                     if !self.authenticated {
-                        ui.label("Please authenticate to view rules");
+                        ui.vertical_centered(|ui| {
+                            ui.label("Please authenticate to view rules");
+                        });
                         return;
                     }
                     egui::Frame::group(ui.style()).show(ui, |ui| {
@@ -1065,7 +1078,7 @@ impl App for GufwApp {
                             ui.label(egui::RichText::new("Log").strong());
                             ui.label(egui::RichText::new("Actions").strong());
                             ui.end_row();
-                            for (i, rule) in rules.iter().enumerate() {
+                            for (_i, rule) in rules.iter().enumerate() {
                                 let (port_proto, action, direction, source) = self.parse_rule_for_display(rule.raw.as_str());
                                 let log = if rule.raw.to_lowercase().contains("log") { "Yes" } else { "No" };
                                 let rule_num = rule.line_number.map(|n| n.to_string()).unwrap_or("-".to_string());
@@ -1097,6 +1110,35 @@ impl App for GufwApp {
                 ui.hyperlink("https://github.com/costales/gufw");
             });
         });
+
+        // Error Dialog
+        if self.show_error_dialog {
+            let is_initializing = self.current_error == "Initializing...";
+            let window_title = if is_initializing { "Status" } else { "Error" };
+            let message_color = if is_initializing { egui::Color32::BLUE } else { egui::Color32::RED };
+            let message_label = if is_initializing { "Status:" } else { "An error occurred:" };
+            
+            egui::Window::new(window_title)
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.colored_label(message_color, message_label);
+                    ui.label(&self.current_error);
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("OK").clicked() {
+                            self.show_error_dialog = false;
+                            self.current_error.clear();
+                            // Clear the error from status and refresh
+                            {
+                                let mut status = self.ufw_status.lock().unwrap();
+                                status.error = None;
+                            }
+                            self.refresh_status();
+                        }
+                    });
+                });
+        }
 
         // Add Rule Dialog
         if self.show_add_dialog {
