@@ -35,7 +35,6 @@ struct AdvancedRule {
     port: String,
     source: String,
     destination: String,
-    log: bool,
     comment: String,
 }
 
@@ -98,7 +97,6 @@ impl Default for GufwApp {
                 port: String::new(),
                 source: "any".to_string(),
                 destination: "any".to_string(),
-                log: false,
                 comment: String::new(),
             },
             show_edit_dialog: false,
@@ -309,7 +307,6 @@ impl GufwApp {
         port: &str,
         source: &str,
         destination: &str,
-        log: bool,
         comment: &str,
         is_delete: bool,
     ) -> Vec<String> {
@@ -337,9 +334,6 @@ impl GufwApp {
             cmd_parts.push("proto".to_string());
             cmd_parts.push(protocol.to_string());
         }
-        if log {
-            cmd_parts.push("log".to_string());
-        }
         if !comment.is_empty() {
             cmd_parts.push("comment".to_string());
             cmd_parts.push(comment.to_string());
@@ -356,7 +350,6 @@ impl GufwApp {
         let mut protocol = "any".to_string();
         let mut source = from.clone();
         let mut destination = to.clone();
-        let mut log = false;
         let mut comment = String::new();
         let mut direction = "any".to_string();
         // Try to extract port/proto from 'to' or 'from'
@@ -369,10 +362,6 @@ impl GufwApp {
         // Check for comment
         if let Some(idx) = line.find('#') {
             comment = line[idx+1..].trim().to_string();
-        }
-        // Check for log
-        if line.to_lowercase().contains("log") {
-            log = true;
         }
         // Try to extract direction from action (ALLOW IN, DENY OUT, etc)
         if action.to_lowercase().contains("in") {
@@ -390,7 +379,6 @@ impl GufwApp {
             port,
             source,
             destination,
-            log,
             comment,
         }
     }
@@ -453,7 +441,6 @@ impl GufwApp {
                 &parsed.port,
                 &parsed.source,
                 &parsed.destination,
-                parsed.log,
                 &parsed.comment,
                 true,
             );
@@ -502,7 +489,6 @@ impl GufwApp {
             &rule.port,
             &rule.source,
             &rule.destination,
-            rule.log,
             &rule.comment,
             false,
         );
@@ -510,7 +496,7 @@ impl GufwApp {
         let ufw_status = self.ufw_status.clone();
         let cmd_parts_clone = cmd_parts.clone();
         // Use the rule line as the display key
-        let display = format!("{} {} {} {} {} {} {} {} {}", rule.action, rule.direction, rule.protocol, rule.port, rule.source, rule.destination, rule.log, rule.comment, "");
+        let display = format!("{} {} {} {} {} {} {} {}", rule.action, rule.direction, rule.protocol, rule.port, rule.source, rule.destination, rule.comment, "");
         self.rule_command_map.insert(display.clone(), cmd_parts.clone());
         println!("UFW Command: ufw {}", cmd_parts.join(" "));
         thread::spawn(move || {
@@ -1075,19 +1061,16 @@ impl App for GufwApp {
                             ui.label(egui::RichText::new("Action").strong());
                             ui.label(egui::RichText::new("Direction").strong());
                             ui.label(egui::RichText::new("Source").strong());
-                            ui.label(egui::RichText::new("Log").strong());
                             ui.label(egui::RichText::new("Actions").strong());
                             ui.end_row();
                             for (_i, rule) in rules.iter().enumerate() {
                                 let (port_proto, action, direction, source) = self.parse_rule_for_display(rule.raw.as_str());
-                                let log = if rule.raw.to_lowercase().contains("log") { "Yes" } else { "No" };
                                 let rule_num = rule.line_number.map(|n| n.to_string()).unwrap_or("-".to_string());
                                 ui.label(rule_num.clone());
                                 ui.label(port_proto);
                                 ui.label(action);
                                 ui.label(direction);
                                 ui.label(source);
-                                ui.label(log);
                                 ui.horizontal(|ui| {
                                     if let Some(num) = rule.line_number {
                                         if ui.add(egui::Button::new("Remove").fill(egui::Color32::from_rgb(220, 60, 60))).clicked() {
@@ -1283,9 +1266,6 @@ impl App for GufwApp {
                         ui.label("Destination:");
                         ui.text_edit_singleline(&mut advanced_rule.destination);
                         ui.label("(e.g., 192.168.1.100, any)");
-                    });
-                    ui.horizontal(|ui| {
-                        ui.checkbox(&mut advanced_rule.log, "Log connections");
                     });
                     ui.horizontal(|ui| {
                         ui.label("Comment:");
