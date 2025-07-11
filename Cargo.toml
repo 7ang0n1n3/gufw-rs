@@ -1,6 +1,6 @@
 [package]
 name = "gufw-rs"
-version = "0.3.0"
+version = "0.3.4"
 edition = "2024"
 authors = ["7ANG0N1N3"]
 

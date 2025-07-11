@@ -3,6 +3,7 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
+use std::collections::HashMap;
 
 #[derive(PartialEq)]
 enum Tab {
@@ -12,9 +13,15 @@ enum Tab {
 }
 
 #[derive(Clone)]
+struct UfwRule {
+    line_number: Option<usize>,
+    raw: String,
+}
+
+#[derive(Clone)]
 struct UfwStatus {
     enabled: bool,
-    rules: Vec<String>,
+    rules: Vec<UfwRule>,
     error: Option<String>,
     default_incoming: String,
     default_outgoing: String,
@@ -56,6 +63,8 @@ struct GufwApp {
     show_policy_dialog: bool,
     policy_incoming: String,
     policy_outgoing: String,
+    // Map rule display string to original command parts
+    rule_command_map: HashMap<String, Vec<String>>,
 }
 
 impl Default for GufwApp {
@@ -97,6 +106,7 @@ impl Default for GufwApp {
             show_policy_dialog: false,
             policy_incoming: "deny".to_string(),
             policy_outgoing: "allow".to_string(),
+            rule_command_map: HashMap::new(),
         }
     }
 }
@@ -254,13 +264,15 @@ impl GufwApp {
         let cmd = if action.to_lowercase() == "allow" { "allow" } else { "deny" };
         let rule = format!("{}/{}", port, protocol);
         let ufw_status = self.ufw_status.clone();
-        
+        let display = format!("{}/{} {} ANY Anywhere", port, protocol, action.to_uppercase());
+        let mut cmd_vec = vec![cmd.to_string(), rule.clone()];
+        // Store the command for later removal
+        self.rule_command_map.insert(display.clone(), cmd_vec.clone());
         thread::spawn(move || {
             let result = run_privileged_ufw_command(&[cmd, &rule]);
             let mut status = ufw_status.lock().unwrap();
             match result {
                 Ok(_) => {
-                    // Refresh status after operation
                     thread::sleep(Duration::from_millis(500));
                     let refresh_result = get_ufw_status_and_rules();
                     match refresh_result {
@@ -281,106 +293,231 @@ impl GufwApp {
                 }
             }
         });
+    }
+
+    /// Build a UFW command from rule fields (for add or delete)
+    fn build_ufw_command(
+        &self,
+        action: &str,
+        direction: &str,
+        protocol: &str,
+        port: &str,
+        source: &str,
+        destination: &str,
+        log: bool,
+        comment: &str,
+        is_delete: bool,
+    ) -> Vec<String> {
+        let mut cmd_parts = Vec::new();
+        if is_delete {
+            cmd_parts.push("delete".to_string());
+        }
+        cmd_parts.push(action.to_lowercase());
+        if direction != "any" {
+            cmd_parts.push(direction.to_string());
+        }
+        if source != "any" {
+            cmd_parts.push("from".to_string());
+            cmd_parts.push(source.to_string());
+        }
+        if destination != "any" {
+            cmd_parts.push("to".to_string());
+            cmd_parts.push(destination.to_string());
+        }
+        if !port.is_empty() {
+            cmd_parts.push("port".to_string());
+            cmd_parts.push(port.to_string());
+        }
+        if protocol != "any" {
+            cmd_parts.push("proto".to_string());
+            cmd_parts.push(protocol.to_string());
+        }
+        if log {
+            cmd_parts.push("log".to_string());
+        }
+        if !comment.is_empty() {
+            cmd_parts.push("comment".to_string());
+            cmd_parts.push(comment.to_string());
+        }
+        cmd_parts
+    }
+
+    /// Parse a UFW rule line into all fields (for advanced rules)
+    fn parse_ufw_rule_full(&self, line: &str) -> AdvancedRule {
+        // This is a best-effort parser for the UFW status output
+        // Example: "Anywhere                   ALLOW       10.0.1.0/24 23/tcp         # Telnet Test"
+        let (to, action, from) = self.parse_ufw_rule_line(line);
+        let mut port = String::new();
+        let mut protocol = "any".to_string();
+        let mut source = from.clone();
+        let mut destination = to.clone();
+        let mut log = false;
+        let mut comment = String::new();
+        let mut direction = "any".to_string();
+        // Try to extract port/proto from 'to' or 'from'
+        for field in [to.as_str(), from.as_str()] {
+            if let Some(idx) = field.find('/') {
+                port = field[..idx].trim().to_string();
+                protocol = field[idx+1..].split_whitespace().next().unwrap_or("").to_string();
+            }
+        }
+        // Check for comment
+        if let Some(idx) = line.find('#') {
+            comment = line[idx+1..].trim().to_string();
+        }
+        // Check for log
+        if line.to_lowercase().contains("log") {
+            log = true;
+        }
+        // Try to extract direction from action (ALLOW IN, DENY OUT, etc)
+        if action.to_lowercase().contains("in") {
+            direction = "in".to_string();
+        } else if action.to_lowercase().contains("out") {
+            direction = "out".to_string();
+        }
+        // Clean up source/destination
+        if source.is_empty() { source = "any".to_string(); }
+        if destination.is_empty() { destination = "any".to_string(); }
+        AdvancedRule {
+            action: action.to_lowercase(),
+            direction,
+            protocol,
+            port,
+            source,
+            destination,
+            log,
+            comment,
+        }
     }
 
     fn remove_rule(&mut self, rule_str: &str) {
         if !self.authenticated {
             return;
         }
-
-        let parts: Vec<&str> = rule_str.split_whitespace().collect();
-        if parts.len() < 2 {
-            let mut status = self.ufw_status.lock().unwrap();
-            status.error = Some("Could not parse rule for removal".to_string());
-            return;
+        // Find the rule and its line number
+        let rules = {
+            let status = self.ufw_status.lock().unwrap();
+            status.rules.clone()
+        };
+        let mut line_number: Option<usize> = None;
+        for rule in &rules {
+            if rule.raw == rule_str.trim() {
+                line_number = rule.line_number;
+                break;
+            }
         }
-        let port_proto = parts[0];
-        let action = parts[1].to_lowercase();
-        let cmd = format!("delete {} {}", action, port_proto);
-        let ufw_status = self.ufw_status.clone();
-        
-        thread::spawn(move || {
-            let result = run_privileged_ufw_command(&cmd.split_whitespace().collect::<Vec<&str>>());
-            let mut status = ufw_status.lock().unwrap();
-            match result {
-                Ok(_) => {
-                    // Refresh status after operation
-                    thread::sleep(Duration::from_millis(500));
-                    let refresh_result = get_ufw_status_and_rules();
-                    match refresh_result {
-                        Ok((enabled, rules, default_incoming, default_outgoing)) => {
-                            status.enabled = enabled;
-                            status.rules = rules;
-                            status.default_incoming = default_incoming;
-                            status.default_outgoing = default_outgoing;
-                            status.error = None;
-                        }
-                        Err(e) => {
-                            status.error = Some(e);
+        if let Some(num) = line_number {
+            // Use ufw delete <number>
+            println!("UFW Delete Command: ufw delete {}", num);
+            let ufw_status = self.ufw_status.clone();
+            thread::spawn(move || {
+                let result = run_privileged_ufw_command(&["delete", &num.to_string()]);
+                println!("UFW Delete Result: {:?}", result);
+                let mut status = ufw_status.lock().unwrap();
+                match result {
+                    Ok(output) => {
+                        println!("UFW Delete Output: {}", output);
+                        thread::sleep(Duration::from_millis(500));
+                        let refresh_result = get_ufw_status_and_rules();
+                        match refresh_result {
+                            Ok((enabled, rules, default_incoming, default_outgoing)) => {
+                                status.enabled = enabled;
+                                status.rules = rules;
+                                status.default_incoming = default_incoming;
+                                status.default_outgoing = default_outgoing;
+                                status.error = None;
+                            }
+                            Err(e) => {
+                                status.error = Some(e);
+                            }
                         }
                     }
+                    Err(e) => {
+                        println!("UFW Delete Error: {}", e);
+                        status.error = Some(e);
+                    }
                 }
-                Err(e) => {
-                    status.error = Some(e);
+            });
+        } else {
+            // Fallback to old logic if no line number found
+            let parsed = self.parse_ufw_rule_full(rule_str);
+            let cmd_parts = self.build_ufw_command(
+                &parsed.action,
+                &parsed.direction,
+                &parsed.protocol,
+                &parsed.port,
+                &parsed.source,
+                &parsed.destination,
+                parsed.log,
+                &parsed.comment,
+                true,
+            );
+            println!("UFW Delete Command (fallback): ufw {}", cmd_parts.join(" "));
+            let ufw_status = self.ufw_status.clone();
+            let cmd_parts_clone = cmd_parts.clone();
+            thread::spawn(move || {
+                let result = run_privileged_ufw_command(&cmd_parts_clone.iter().map(|s| s.as_str()).collect::<Vec<&str>>());
+                println!("UFW Delete Result: {:?}", result);
+                let mut status = ufw_status.lock().unwrap();
+                match result {
+                    Ok(output) => {
+                        println!("UFW Delete Output: {}", output);
+                        thread::sleep(Duration::from_millis(500));
+                        let refresh_result = get_ufw_status_and_rules();
+                        match refresh_result {
+                            Ok((enabled, rules, default_incoming, default_outgoing)) => {
+                                status.enabled = enabled;
+                                status.rules = rules;
+                                status.default_incoming = default_incoming;
+                                status.default_outgoing = default_outgoing;
+                                status.error = None;
+                            }
+                            Err(e) => {
+                                status.error = Some(e);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        println!("UFW Delete Error: {}", e);
+                        status.error = Some(e);
+                    }
                 }
-            }
-        });
+            });
+        }
     }
 
     fn add_advanced_rule(&mut self, rule: &AdvancedRule) {
         if !self.authenticated {
             return;
         }
-
-        let mut cmd_parts = vec![rule.action.clone()];
-        
-        // Add direction
-        if rule.direction != "any" {
-            cmd_parts.push(rule.direction.clone());
-        }
-        
-        // Add protocol
-        if rule.protocol != "any" {
-            cmd_parts.push(rule.protocol.clone());
-        }
-        
-        // Add port if specified
-        if !rule.port.is_empty() {
-            cmd_parts.push(rule.port.clone());
-        }
-        
-        // Add source
-        if rule.source != "any" {
-            cmd_parts.push("from".to_string());
-            cmd_parts.push(rule.source.clone());
-        }
-        
-        // Add destination
-        if rule.destination != "any" {
-            cmd_parts.push("to".to_string());
-            cmd_parts.push(rule.destination.clone());
-        }
-        
-        // Add logging
-        if rule.log {
-            cmd_parts.push("log".to_string());
-        }
-        
-        // Add comment if specified
-        if !rule.comment.is_empty() {
-            cmd_parts.push("comment".to_string());
-            cmd_parts.push(rule.comment.clone());
-        }
-
+        let cmd_parts = self.build_ufw_command(
+            &rule.action,
+            &rule.direction,
+            &rule.protocol,
+            &rule.port,
+            &rule.source,
+            &rule.destination,
+            rule.log,
+            &rule.comment,
+            false,
+        );
+        println!("[DEBUG] add_advanced_rule: ufw {}", cmd_parts.join(" "));
         let ufw_status = self.ufw_status.clone();
         let cmd_parts_clone = cmd_parts.clone();
-        
+        // Use the rule line as the display key
+        let display = format!("{} {} {} {} {} {} {} {} {}", rule.action, rule.direction, rule.protocol, rule.port, rule.source, rule.destination, rule.log, rule.comment, "");
+        self.rule_command_map.insert(display.clone(), cmd_parts.clone());
+        println!("UFW Command: ufw {}", cmd_parts.join(" "));
         thread::spawn(move || {
             let result = run_privileged_ufw_command(&cmd_parts_clone.iter().map(|s| s.as_str()).collect::<Vec<&str>>());
+            println!("[DEBUG] add_advanced_rule result: {:?}", result);
+            match &result {
+                Ok(output) => println!("[DEBUG] add_advanced_rule output: {}", output),
+                Err(e) => println!("[DEBUG] add_advanced_rule error: {}", e),
+            }
             let mut status = ufw_status.lock().unwrap();
             match result {
-                Ok(_) => {
-                    // Refresh status after operation
+                Ok(_output) => {
                     thread::sleep(Duration::from_millis(500));
                     let refresh_result = get_ufw_status_and_rules();
                     match refresh_result {
@@ -403,9 +540,37 @@ impl GufwApp {
         });
     }
 
-
-
-
+    fn remove_rule_by_number(&mut self, line_number: usize) {
+        if !self.authenticated {
+            return;
+        }
+        let ufw_status = self.ufw_status.clone();
+        thread::spawn(move || {
+            let result = run_privileged_ufw_command(&["--force", "delete", &line_number.to_string()]);
+            let mut status = ufw_status.lock().unwrap();
+            match result {
+                Ok(output) => {
+                    thread::sleep(Duration::from_millis(500));
+                    let refresh_result = get_ufw_status_and_rules();
+                    match refresh_result {
+                        Ok((enabled, rules, default_incoming, default_outgoing)) => {
+                            status.enabled = enabled;
+                            status.rules = rules;
+                            status.default_incoming = default_incoming;
+                            status.default_outgoing = default_outgoing;
+                            status.error = None;
+                        }
+                        Err(e) => {
+                            status.error = Some(e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    status.error = Some(e);
+                }
+            }
+        });
+    }
 
     fn parse_rule(&self, rule_str: &str) -> Option<(String, String, String)> {
         // Parse rule string like "22/tcp                   ALLOW       Anywhere"
@@ -457,7 +622,7 @@ impl GufwApp {
         let old_rule = &rules[rule_index];
         
         // Parse the old rule to get its components
-        if let Some((old_action, old_port, old_protocol)) = self.parse_rule(old_rule) {
+        if let Some((old_action, old_port, old_protocol)) = self.parse_rule(old_rule.raw.as_str()) {
             // Remove the old rule
             let old_cmd = format!("delete {} {}/{}", old_action, old_port, old_protocol);
             
@@ -590,13 +755,13 @@ fn run_privileged_ufw_command(args: &[&str]) -> Result<String, String> {
     }
 }
 
-fn get_ufw_status_and_rules() -> Result<(bool, Vec<String>, String, String), String> {
-    let output = run_privileged_ufw_command(&["status"])?;
+fn get_ufw_status_and_rules() -> Result<(bool, Vec<UfwRule>, String, String), String> {
+    // Use numbered status for line numbers
+    let output = run_privileged_ufw_command(&["status", "numbered"])?;
     let mut enabled = false;
     let mut rules = Vec::new();
     let mut default_incoming = "deny".to_string();
     let mut default_outgoing = "allow".to_string();
-    
     for line in output.lines() {
         if line.contains("Status: active") {
             enabled = true;
@@ -604,7 +769,6 @@ fn get_ufw_status_and_rules() -> Result<(bool, Vec<String>, String, String), Str
         if line.contains("Status: inactive") {
             enabled = false;
         }
-        // Parse default policies
         if line.contains("Default incoming policy") {
             if line.contains("allow") {
                 default_incoming = "allow".to_string();
@@ -618,12 +782,20 @@ fn get_ufw_status_and_rules() -> Result<(bool, Vec<String>, String, String), Str
                 default_outgoing = "deny".to_string();
             }
         }
-        // Parse rules (skip header lines and separators)
-        if line.starts_with("To") || line.starts_with("---") || line.starts_with("Status:") || line.trim().is_empty() || line.chars().all(|c| c == '-' || c.is_whitespace()) {
+        // Skip header/separator lines
+        if line.starts_with("To") || line.starts_with("--") || line.trim().is_empty() || line.chars().all(|c| c == '-' || c.is_whitespace()) {
             continue;
         }
-        if enabled && !line.contains("Status:") && !line.trim().is_empty() {
-            rules.push(line.trim().to_string());
+        // Parse rules with line numbers
+        if line.starts_with("[") {
+            // Example: [ 1] 22/tcp                     ALLOW       Anywhere
+            if let Some(idx) = line.find(']') {
+                let num_str = line[1..idx].trim();
+                if let Ok(num) = num_str.parse::<usize>() {
+                    let rule_str = line[idx+1..].trim().to_string();
+                    rules.push(UfwRule { line_number: Some(num), raw: rule_str });
+                }
+            }
         }
     }
     Ok((enabled, rules, default_incoming, default_outgoing))
@@ -707,7 +879,7 @@ impl App for GufwApp {
                 self.show_policy_dialog = true;
             }
             ui.add_space(16.0);
-            ui.label("Version: 0.3.0");
+            ui.label(format!("Version: {}", env!("CARGO_PKG_VERSION")));
             ui.label("by 7ANG0N1N3");
         });
 
@@ -760,6 +932,7 @@ impl App for GufwApp {
                             ui.add_space(8.0);
                         } else {
                             egui::Grid::new("rules_grid").striped(true).show(ui, |ui| {
+                            ui.label(egui::RichText::new("Rule #").strong());
                             ui.label(egui::RichText::new("Port/Protocol").strong());
                             ui.label(egui::RichText::new("Action").strong());
                             ui.label(egui::RichText::new("Direction").strong());
@@ -767,26 +940,27 @@ impl App for GufwApp {
                             ui.label(egui::RichText::new("Actions").strong());
                             ui.end_row();
                             for (i, rule) in rules.iter().enumerate() {
-                                // Parse rule for display
-                                let (port_proto, action, direction, source) = self.parse_rule_for_display(rule);
-                                
+                                let (port_proto, action, direction, source) = self.parse_rule_for_display(rule.raw.as_str());
+                                let rule_num = rule.line_number.map(|n| n.to_string()).unwrap_or("-".to_string());
+                                ui.label(rule_num.clone());
                                 ui.label(port_proto);
                                 ui.label(action);
                                 ui.label(direction);
                                 ui.label(source);
                                 ui.horizontal(|ui| {
+                                    if let Some(num) = rule.line_number {
+                                        if ui.add(egui::Button::new("Remove").fill(egui::Color32::from_rgb(220, 60, 60))).on_hover_text("Remove this rule").clicked() {
+                                            self.remove_rule_by_number(num);
+                                        }
+                                    }
                                     if ui.add(egui::Button::new("Edit").fill(egui::Color32::from_rgb(60, 120, 180))).on_hover_text("Edit this rule").clicked() {
-                                        if let Some((action, port, protocol)) = self.parse_rule(rule) {
+                                        if let Some((action, port, protocol)) = self.parse_rule(rule.raw.as_str()) {
                                             self.edit_action = action;
                                             self.edit_port = port;
                                             self.edit_protocol = protocol;
                                             self.edit_rule_index = Some(i);
                                             self.show_edit_dialog = true;
                                         }
-                                    }
-                                    if ui.add(egui::Button::new("Remove").fill(egui::Color32::from_rgb(220, 60, 60))).on_hover_text("Remove this rule").clicked() {
-                                        self.show_remove_dialog = true;
-                                        self.remove_index = Some(i);
                                     }
                                 });
                                 ui.end_row();
@@ -883,6 +1057,7 @@ impl App for GufwApp {
                         } else {
                             // Show current rules in advanced format
                             egui::Grid::new("advanced_rules_grid").striped(true).show(ui, |ui| {
+                            ui.label(egui::RichText::new("Rule #").strong());
                             ui.label(egui::RichText::new("Port/Protocol").strong());
                             ui.label(egui::RichText::new("Action").strong());
                             ui.label(egui::RichText::new("Direction").strong());
@@ -891,17 +1066,20 @@ impl App for GufwApp {
                             ui.label(egui::RichText::new("Actions").strong());
                             ui.end_row();
                             for (i, rule) in rules.iter().enumerate() {
-                                let (port_proto, action, direction, source) = self.parse_rule_for_display(rule);
-                                let log = if rule.to_lowercase().contains("log") { "Yes" } else { "No" };
+                                let (port_proto, action, direction, source) = self.parse_rule_for_display(rule.raw.as_str());
+                                let log = if rule.raw.to_lowercase().contains("log") { "Yes" } else { "No" };
+                                let rule_num = rule.line_number.map(|n| n.to_string()).unwrap_or("-".to_string());
+                                ui.label(rule_num.clone());
                                 ui.label(port_proto);
                                 ui.label(action);
                                 ui.label(direction);
                                 ui.label(source);
                                 ui.label(log);
                                 ui.horizontal(|ui| {
-                                    if ui.add(egui::Button::new("Remove").fill(egui::Color32::from_rgb(220, 60, 60))).clicked() {
-                                        self.show_remove_dialog = true;
-                                        self.remove_index = Some(i);
+                                    if let Some(num) = rule.line_number {
+                                        if ui.add(egui::Button::new("Remove").fill(egui::Color32::from_rgb(220, 60, 60))).clicked() {
+                                            self.remove_rule_by_number(num);
+                                        }
                                     }
                                 });
                                 ui.end_row();
@@ -997,7 +1175,7 @@ impl App for GufwApp {
                         if ui.button("Remove").clicked() {
                             if let Some(idx) = self.remove_index {
                                 if idx < rules.len() {
-                                    let rule_str = rules[idx].clone();
+                                    let rule_str = rules[idx].raw.clone();
                                     self.remove_rule(&rule_str);
                                 }
                             }
