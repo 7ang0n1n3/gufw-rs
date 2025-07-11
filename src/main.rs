@@ -67,6 +67,8 @@ struct GufwApp {
     // Error dialog fields
     show_error_dialog: bool,
     current_error: String,
+    // Help dialog fields
+    show_about_dialog: bool,
 }
 
 impl Default for GufwApp {
@@ -110,6 +112,7 @@ impl Default for GufwApp {
             rule_command_map: HashMap::new(),
             show_error_dialog: false,
             current_error: String::new(),
+            show_about_dialog: false,
         }
     }
 }
@@ -811,6 +814,9 @@ impl App for GufwApp {
             ui.horizontal(|ui| {
                 ui.heading("gufw-rs - Firewall Configuration");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("About").on_hover_text("Show help information").clicked() {
+                        self.show_about_dialog = true;
+                    }
                     if ui.button("Quit").on_hover_text("Exit application").clicked() {
                         std::process::exit(0);
                     }
@@ -1401,6 +1407,42 @@ impl App for GufwApp {
                 self.policy_incoming = policy_incoming;
                 self.policy_outgoing = policy_outgoing;
             }
+        }
+
+        // Help Dialog
+        if self.show_about_dialog {
+            egui::Window::new("About")
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.heading("gufw-rs : GUI UFW interface in Rust");
+                        ui.add_space(8.0);
+                        ui.label(format!("version : {}", env!("CARGO_PKG_VERSION")));
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            ui.label("GITHUB  : ");
+                            if ui.link("https://github.com/7ang0n1n3/gufw-rs").clicked() {
+                                let _ = webbrowser::open("https://github.com/7ang0n1n3/gufw-rs");
+                            }
+                        });
+                        ui.add_space(16.0);
+                        ui.horizontal(|ui| {
+                            ui.label("This is a take on gufw by costales ");
+                            if ui.link("<https://github.com/costales/gufw>").clicked() {
+                                let _ = webbrowser::open("https://github.com/costales/gufw");
+                            }
+                        });
+                    });
+                    ui.add_space(16.0);
+                    ui.horizontal(|ui| {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("OK").clicked() {
+                                self.show_about_dialog = false;
+                            }
+                        });
+                    });
+                });
         }
     }
 }
