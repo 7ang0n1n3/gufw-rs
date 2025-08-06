@@ -275,6 +275,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ---
 
-**Created with ❤️ by 7ANG0N1N3**
+**Created by 7ANG0N1N3**
 
 *Built for Arch Linux and Hyprland, but works on any Linux distribution with UFW support.*
