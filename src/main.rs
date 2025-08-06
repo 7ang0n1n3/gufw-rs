@@ -5,6 +5,8 @@ use std::thread;
 use std::time::Duration;
 use std::collections::HashMap;
 
+
+
 #[derive(PartialEq)]
 enum Tab {
     Simple,
@@ -118,6 +120,8 @@ impl Default for GufwApp {
 }
 
 impl GufwApp {
+
+
     fn authenticate_once(&mut self) {
         if !self.authenticated {
             // Try to authenticate using sudo with timestamp
@@ -155,66 +159,32 @@ impl GufwApp {
         }
     }
 
-    fn run_privileged_command(&self, args: &[&str]) -> Result<String, String> {
-        if !self.authenticated {
-            return Err("Not authenticated".to_string());
-        }
 
-        // Try sudo first (should work if already authenticated)
-        let sudo_result = Command::new("sudo")
-            .arg("-n")
-            .arg("ufw")
-            .args(args)
-            .output();
-
-        match sudo_result {
-            Ok(output) if output.status.success() => {
-                Ok(String::from_utf8_lossy(&output.stdout).to_string())
-            }
-            _ => {
-                // Fallback to pkexec if sudo fails
-                let pkexec_result = Command::new("pkexec")
-                    .arg("ufw")
-                    .args(args)
-                    .output();
-
-                match pkexec_result {
-                    Ok(output) if output.status.success() => {
-                        Ok(String::from_utf8_lossy(&output.stdout).to_string())
-                    }
-                    Ok(output) => {
-                        Err(format!("Command failed: {}", String::from_utf8_lossy(&output.stderr)))
-                    }
-                    Err(e) => {
-                        Err(format!("Failed to run command: {}", e))
-                    }
-                }
-            }
-        }
-    }
 
     fn spawn_status_thread(&self) {
         let ufw_status = self.ufw_status.clone();
         let authenticated = self.authenticated;
         thread::spawn(move || {
             if !authenticated {
-                let mut status = ufw_status.lock().unwrap();
-                status.error = Some("Not authenticated".to_string());
+                if let Ok(mut status) = ufw_status.lock() {
+                    status.error = Some("Not authenticated".to_string());
+                }
                 return;
             }
 
             let result = get_ufw_status_and_rules();
-            let mut status = ufw_status.lock().unwrap();
-            match result {
-                Ok((enabled, rules, default_incoming, default_outgoing)) => {
-                    status.enabled = enabled;
-                    status.rules = rules;
-                    status.default_incoming = default_incoming;
-                    status.default_outgoing = default_outgoing;
-                    status.error = None;
-                }
-                Err(e) => {
-                    status.error = Some(e);
+            if let Ok(mut status) = ufw_status.lock() {
+                match result {
+                    Ok((enabled, rules, default_incoming, default_outgoing)) => {
+                        status.enabled = enabled;
+                        status.rules = rules;
+                        status.default_incoming = default_incoming;
+                        status.default_outgoing = default_outgoing;
+                        status.error = None;
+                    }
+                    Err(e) => {
+                        status.error = Some(e);
+                    }
                 }
             }
         });
@@ -236,27 +206,28 @@ impl GufwApp {
         
         thread::spawn(move || {
             let result = run_privileged_ufw_command(&[cmd]);
-            let mut status = ufw_status.lock().unwrap();
-            match result {
-                Ok(_) => {
-                    // Refresh status after operation
-                    thread::sleep(Duration::from_millis(500));
-                    let refresh_result = get_ufw_status_and_rules();
-                    match refresh_result {
-                        Ok((enabled, rules, default_incoming, default_outgoing)) => {
-                            status.enabled = enabled;
-                            status.rules = rules;
-                            status.default_incoming = default_incoming;
-                            status.default_outgoing = default_outgoing;
-                            status.error = None;
-                        }
-                        Err(e) => {
-                            status.error = Some(e);
+            if let Ok(mut status) = ufw_status.lock() {
+                match result {
+                    Ok(_) => {
+                        // Refresh status after operation
+                        thread::sleep(Duration::from_millis(500));
+                        let refresh_result = get_ufw_status_and_rules();
+                        match refresh_result {
+                            Ok((enabled, rules, default_incoming, default_outgoing)) => {
+                                status.enabled = enabled;
+                                status.rules = rules;
+                                status.default_incoming = default_incoming;
+                                status.default_outgoing = default_outgoing;
+                                status.error = None;
+                            }
+                            Err(e) => {
+                                status.error = Some(e);
+                            }
                         }
                     }
-                }
-                Err(e) => {
-                    status.error = Some(e);
+                    Err(e) => {
+                        status.error = Some(e);
+                    }
                 }
             }
         });
@@ -271,31 +242,32 @@ impl GufwApp {
         let rule = format!("{}/{}", port, protocol);
         let ufw_status = self.ufw_status.clone();
         let display = format!("{}/{} {} ANY Anywhere", port, protocol, action.to_uppercase());
-        let mut cmd_vec = vec![cmd.to_string(), rule.clone()];
+        let cmd_vec = vec![cmd.to_string(), rule.clone()];
         // Store the command for later removal
         self.rule_command_map.insert(display.clone(), cmd_vec.clone());
         thread::spawn(move || {
             let result = run_privileged_ufw_command(&[cmd, &rule]);
-            let mut status = ufw_status.lock().unwrap();
-            match result {
-                Ok(_) => {
-                    thread::sleep(Duration::from_millis(500));
-                    let refresh_result = get_ufw_status_and_rules();
-                    match refresh_result {
-                        Ok((enabled, rules, default_incoming, default_outgoing)) => {
-                            status.enabled = enabled;
-                            status.rules = rules;
-                            status.default_incoming = default_incoming;
-                            status.default_outgoing = default_outgoing;
-                            status.error = None;
-                        }
-                        Err(e) => {
-                            status.error = Some(e);
+            if let Ok(mut status) = ufw_status.lock() {
+                match result {
+                    Ok(_) => {
+                        thread::sleep(Duration::from_millis(500));
+                        let refresh_result = get_ufw_status_and_rules();
+                        match refresh_result {
+                            Ok((enabled, rules, default_incoming, default_outgoing)) => {
+                                status.enabled = enabled;
+                                status.rules = rules;
+                                status.default_incoming = default_incoming;
+                                status.default_outgoing = default_outgoing;
+                                status.error = None;
+                            }
+                            Err(e) => {
+                                status.error = Some(e);
+                            }
                         }
                     }
-                }
-                Err(e) => {
-                    status.error = Some(e);
+                    Err(e) => {
+                        status.error = Some(e);
+                    }
                 }
             }
         });
@@ -392,8 +364,11 @@ impl GufwApp {
         }
         // Find the rule and its line number
         let rules = {
-            let status = self.ufw_status.lock().unwrap();
-            status.rules.clone()
+            if let Ok(status) = self.ufw_status.lock() {
+                status.rules.clone()
+            } else {
+                return; // If we can't lock the status, just return
+            }
         };
         let mut line_number: Option<usize> = None;
         for rule in &rules {
@@ -409,28 +384,29 @@ impl GufwApp {
             thread::spawn(move || {
                 let result = run_privileged_ufw_command(&["delete", &num.to_string()]);
                 println!("UFW Delete Result: {:?}", result);
-                let mut status = ufw_status.lock().unwrap();
-                match result {
-                    Ok(output) => {
-                        println!("UFW Delete Output: {}", output);
-                        thread::sleep(Duration::from_millis(500));
-                        let refresh_result = get_ufw_status_and_rules();
-                        match refresh_result {
-                            Ok((enabled, rules, default_incoming, default_outgoing)) => {
-                                status.enabled = enabled;
-                                status.rules = rules;
-                                status.default_incoming = default_incoming;
-                                status.default_outgoing = default_outgoing;
-                                status.error = None;
-                            }
-                            Err(e) => {
-                                status.error = Some(e);
+                if let Ok(mut status) = ufw_status.lock() {
+                    match result {
+                        Ok(output) => {
+                            println!("UFW Delete Output: {}", output);
+                            thread::sleep(Duration::from_millis(500));
+                            let refresh_result = get_ufw_status_and_rules();
+                            match refresh_result {
+                                Ok((enabled, rules, default_incoming, default_outgoing)) => {
+                                    status.enabled = enabled;
+                                    status.rules = rules;
+                                    status.default_incoming = default_incoming;
+                                    status.default_outgoing = default_outgoing;
+                                    status.error = None;
+                                }
+                                Err(e) => {
+                                    status.error = Some(e);
+                                }
                             }
                         }
-                    }
-                    Err(e) => {
-                        println!("UFW Delete Error: {}", e);
-                        status.error = Some(e);
+                        Err(e) => {
+                            println!("UFW Delete Error: {}", e);
+                            status.error = Some(e);
+                        }
                     }
                 }
             });
@@ -453,28 +429,29 @@ impl GufwApp {
             thread::spawn(move || {
                 let result = run_privileged_ufw_command(&cmd_parts_clone.iter().map(|s| s.as_str()).collect::<Vec<&str>>());
                 println!("UFW Delete Result: {:?}", result);
-                let mut status = ufw_status.lock().unwrap();
-                match result {
-                    Ok(output) => {
-                        println!("UFW Delete Output: {}", output);
-                        thread::sleep(Duration::from_millis(500));
-                        let refresh_result = get_ufw_status_and_rules();
-                        match refresh_result {
-                            Ok((enabled, rules, default_incoming, default_outgoing)) => {
-                                status.enabled = enabled;
-                                status.rules = rules;
-                                status.default_incoming = default_incoming;
-                                status.default_outgoing = default_outgoing;
-                                status.error = None;
-                            }
-                            Err(e) => {
-                                status.error = Some(e);
+                if let Ok(mut status) = ufw_status.lock() {
+                    match result {
+                        Ok(output) => {
+                            println!("UFW Delete Output: {}", output);
+                            thread::sleep(Duration::from_millis(500));
+                            let refresh_result = get_ufw_status_and_rules();
+                            match refresh_result {
+                                Ok((enabled, rules, default_incoming, default_outgoing)) => {
+                                    status.enabled = enabled;
+                                    status.rules = rules;
+                                    status.default_incoming = default_incoming;
+                                    status.default_outgoing = default_outgoing;
+                                    status.error = None;
+                                }
+                                Err(e) => {
+                                    status.error = Some(e);
+                                }
                             }
                         }
-                    }
-                    Err(e) => {
-                        println!("UFW Delete Error: {}", e);
-                        status.error = Some(e);
+                        Err(e) => {
+                            println!("UFW Delete Error: {}", e);
+                            status.error = Some(e);
+                        }
                     }
                 }
             });
@@ -509,26 +486,27 @@ impl GufwApp {
                 Ok(output) => println!("[DEBUG] add_advanced_rule output: {}", output),
                 Err(e) => println!("[DEBUG] add_advanced_rule error: {}", e),
             }
-            let mut status = ufw_status.lock().unwrap();
-            match result {
-                Ok(_output) => {
-                    thread::sleep(Duration::from_millis(500));
-                    let refresh_result = get_ufw_status_and_rules();
-                    match refresh_result {
-                        Ok((enabled, rules, default_incoming, default_outgoing)) => {
-                            status.enabled = enabled;
-                            status.rules = rules;
-                            status.default_incoming = default_incoming;
-                            status.default_outgoing = default_outgoing;
-                            status.error = None;
-                        }
-                        Err(e) => {
-                            status.error = Some(e);
+            if let Ok(mut status) = ufw_status.lock() {
+                match result {
+                    Ok(_output) => {
+                        thread::sleep(Duration::from_millis(500));
+                        let refresh_result = get_ufw_status_and_rules();
+                        match refresh_result {
+                            Ok((enabled, rules, default_incoming, default_outgoing)) => {
+                                status.enabled = enabled;
+                                status.rules = rules;
+                                status.default_incoming = default_incoming;
+                                status.default_outgoing = default_outgoing;
+                                status.error = None;
+                            }
+                            Err(e) => {
+                                status.error = Some(e);
+                            }
                         }
                     }
-                }
-                Err(e) => {
-                    status.error = Some(e);
+                    Err(e) => {
+                        status.error = Some(e);
+                    }
                 }
             }
         });
@@ -541,26 +519,27 @@ impl GufwApp {
         let ufw_status = self.ufw_status.clone();
         thread::spawn(move || {
             let result = run_privileged_ufw_command(&["--force", "delete", &line_number.to_string()]);
-            let mut status = ufw_status.lock().unwrap();
-            match result {
-                Ok(output) => {
-                    thread::sleep(Duration::from_millis(500));
-                    let refresh_result = get_ufw_status_and_rules();
-                    match refresh_result {
-                        Ok((enabled, rules, default_incoming, default_outgoing)) => {
-                            status.enabled = enabled;
-                            status.rules = rules;
-                            status.default_incoming = default_incoming;
-                            status.default_outgoing = default_outgoing;
-                            status.error = None;
-                        }
-                        Err(e) => {
-                            status.error = Some(e);
+            if let Ok(mut status) = ufw_status.lock() {
+                match result {
+                    Ok(_output) => {
+                        thread::sleep(Duration::from_millis(500));
+                        let refresh_result = get_ufw_status_and_rules();
+                        match refresh_result {
+                            Ok((enabled, rules, default_incoming, default_outgoing)) => {
+                                status.enabled = enabled;
+                                status.rules = rules;
+                                status.default_incoming = default_incoming;
+                                status.default_outgoing = default_outgoing;
+                                status.error = None;
+                            }
+                            Err(e) => {
+                                status.error = Some(e);
+                            }
                         }
                     }
-                }
-                Err(e) => {
-                    status.error = Some(e);
+                    Err(e) => {
+                        status.error = Some(e);
+                    }
                 }
             }
         });
@@ -605,8 +584,11 @@ impl GufwApp {
 
         let ufw_status = self.ufw_status.clone();
         let rules = {
-            let status = self.ufw_status.lock().unwrap();
-            status.rules.clone()
+            if let Ok(status) = self.ufw_status.lock() {
+                status.rules.clone()
+            } else {
+                return; // If we can't lock the status, just return
+            }
         };
         
         if rule_index >= rules.len() {
@@ -634,62 +616,25 @@ impl GufwApp {
                 // Refresh status after operation
                 thread::sleep(Duration::from_millis(500));
                 let refresh_result = get_ufw_status_and_rules();
-                let mut status = ufw_status.lock().unwrap();
-                match refresh_result {
-                    Ok((enabled, rules, default_incoming, default_outgoing)) => {
-                        status.enabled = enabled;
-                        status.rules = rules;
-                        status.default_incoming = default_incoming;
-                        status.default_outgoing = default_outgoing;
-                        status.error = None;
-                    }
-                    Err(e) => {
-                        status.error = Some(e);
+                if let Ok(mut status) = ufw_status.lock() {
+                    match refresh_result {
+                        Ok((enabled, rules, default_incoming, default_outgoing)) => {
+                            status.enabled = enabled;
+                            status.rules = rules;
+                            status.default_incoming = default_incoming;
+                            status.default_outgoing = default_outgoing;
+                            status.error = None;
+                        }
+                        Err(e) => {
+                            status.error = Some(e);
+                        }
                     }
                 }
             });
         }
     }
 
-    fn get_default_policies(&mut self) {
-        if !self.authenticated {
-            return;
-        }
 
-        let ufw_status = self.ufw_status.clone();
-        thread::spawn(move || {
-            // Use "status verbose" to get default policies
-            let result = run_privileged_ufw_command(&["status", "verbose"]);
-            let mut status = ufw_status.lock().unwrap();
-            match result {
-                Ok(output) => {
-                    // Parse the default policies from output
-                    let mut incoming = "deny".to_string();
-                    let mut outgoing = "allow".to_string();
-                    for line in output.lines() {
-                        if line.contains("Default incoming policy") {
-                            if line.contains("allow") {
-                                incoming = "allow".to_string();
-                            } else if line.contains("deny") {
-                                incoming = "deny".to_string();
-                            }
-                        } else if line.contains("Default outgoing policy") {
-                            if line.contains("allow") {
-                                outgoing = "allow".to_string();
-                            } else if line.contains("deny") {
-                                outgoing = "deny".to_string();
-                            }
-                        }
-                    }
-                    status.default_incoming = incoming;
-                    status.default_outgoing = outgoing;
-                }
-                Err(e) => {
-                    status.error = Some(e);
-                }
-            }
-        });
-    }
 
     fn set_default_policies(&mut self, incoming: &str, outgoing: &str) {
         if !self.authenticated {
@@ -708,9 +653,10 @@ impl GufwApp {
             let _ = run_privileged_ufw_command(&["default", "outgoing", &outgoing]);
             
             // Update the status
-            let mut status = ufw_status.lock().unwrap();
-            status.default_incoming = incoming;
-            status.default_outgoing = outgoing;
+            if let Ok(mut status) = ufw_status.lock() {
+                status.default_incoming = incoming;
+                status.default_outgoing = outgoing;
+            }
         });
     }
 }
@@ -826,8 +772,11 @@ impl App for GufwApp {
 
         egui::SidePanel::left("sidebar").min_width(200.0).show(ctx, |ui| {
             let (enabled, error) = {
-                let status = self.ufw_status.lock().unwrap();
-                (status.enabled, status.error.clone())
+                if let Ok(status) = self.ufw_status.lock() {
+                    (status.enabled, status.error.clone())
+                } else {
+                    (false, Some("Failed to read status".to_string()))
+                }
             };
             ui.heading("Status");
             ui.add_space(8.0);
@@ -862,8 +811,11 @@ impl App for GufwApp {
             ui.separator();
             ui.label("Default Policy:");
             let (default_incoming, default_outgoing) = {
-                let status = self.ufw_status.lock().unwrap();
-                (status.default_incoming.clone(), status.default_outgoing.clone())
+                if let Ok(status) = self.ufw_status.lock() {
+                    (status.default_incoming.clone(), status.default_outgoing.clone())
+                } else {
+                    ("deny".to_string(), "allow".to_string())
+                }
             };
             ui.horizontal(|ui| {
                 ui.label("Incoming:");
@@ -886,19 +838,16 @@ impl App for GufwApp {
         egui::CentralPanel::default().show(ctx, |ui| {
             // Check for errors and show dialog if needed
             {
-                let status = self.ufw_status.lock().unwrap();
-                if let Some(error) = &status.error {
-                    if !self.show_error_dialog {
-                        self.current_error = error.clone();
-                        self.show_error_dialog = true;
+                if let Ok(status) = self.ufw_status.lock() {
+                    if let Some(error) = &status.error {
+                        if !self.show_error_dialog {
+                            self.current_error = error.clone();
+                            self.show_error_dialog = true;
+                        }
                     }
                 }
             }
             
-            let rules = {
-                let status = self.ufw_status.lock().unwrap();
-                status.rules.clone()
-            };
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 let mut tab_button = |ui: &mut egui::Ui, tab: Tab, label: &str, icon: &str, tooltip: &str| {
@@ -920,8 +869,11 @@ impl App for GufwApp {
             match self.selected_tab {
                 Tab::Simple => {
                     let rules = {
-                        let status = self.ufw_status.lock().unwrap();
-                        status.rules.clone()
+                        if let Ok(status) = self.ufw_status.lock() {
+                            status.rules.clone()
+                        } else {
+                            vec![]
+                        }
                     };
                     
                     // Check if we're still loading (not authenticated)
@@ -1035,8 +987,11 @@ impl App for GufwApp {
                 }
                 Tab::Advanced => {
                     let rules = {
-                        let status = self.ufw_status.lock().unwrap();
-                        status.rules.clone()
+                        if let Ok(status) = self.ufw_status.lock() {
+                            status.rules.clone()
+                        } else {
+                            vec![]
+                        }
                     };
                     
                     // Check if we're still loading (not authenticated)
@@ -1120,8 +1075,9 @@ impl App for GufwApp {
                             self.current_error.clear();
                             // Clear the error from status and refresh
                             {
-                                let mut status = self.ufw_status.lock().unwrap();
-                                status.error = None;
+                                if let Ok(mut status) = self.ufw_status.lock() {
+                                    status.error = None;
+                                }
                             }
                             self.refresh_status();
                         }
@@ -1193,8 +1149,11 @@ impl App for GufwApp {
         // Remove Rule Dialog
         if self.show_remove_dialog {
             let rules = {
-                let status = self.ufw_status.lock().unwrap();
-                status.rules.clone()
+                if let Ok(status) = self.ufw_status.lock() {
+                    status.rules.clone()
+                } else {
+                    vec![]
+                }
             };
             egui::Window::new("Remove Rule?")
                 .collapsible(false)
