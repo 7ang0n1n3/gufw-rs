@@ -1,12 +1,10 @@
 [package]
 name = "gufw-rs"
-version = "0.3.6"
+version = "0.6.0"
 edition = "2024"
 authors = ["7ANG0N1N3"]
 
 [dependencies]
 eframe = "0.31.1"
 egui = "0.31.1"
-serde_json = "1.0"
-image = "0.25"
 webbrowser = "0.8"
